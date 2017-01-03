@@ -1,0 +1,305 @@
+---
+title: "10 - Analyse Data Sub-population"
+author: "Mick Cooney"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    fig_caption: yes
+    theme: cerulean
+  pdf_document: default
+---
+
+<!--
+(Title: 10 - Analyse Data Sub-population
+Author: Mick Cooney
+Date: `r Sys.Date()`
+Abstract: The abstract for this article goes here
+Keywords:
+-->
+
+
+```{r knit_opts, include=FALSE}
+rm(list = ls())
+
+knitr::opts_chunk$set(tidy       = FALSE
+                     ,cache      = FALSE
+                     ,fig.height =     8
+                     ,fig.width  =    11
+                     )
+
+library(tidyverse)
+library(forcats)
+library(scales)
+library(lubridate)
+library(boot)
+
+
+options(width = 90L)
+
+set.seed(42)
+```
+
+
+# Introduction
+
+This workbook loads the lifebook data and creates a sample subpopulation of the data to be analysed in the rest of the project.
+
+```{r load_data, echo=TRUE}
+lifebook_tbl <- read_csv("data/dataset.csv", progress = FALSE) %>%
+    mutate_if(is.character, as.factor)
+
+glimpse(lifebook_tbl)
+```
+
+Having loaded the data, we now separate the data into four categories: logical, numeric, categorical, and date/time.
+
+```{r determine_column_datatypes, echo=TRUE}
+drop_var <- c('policy_id', 'edname', 'sa_id')
+subpop_var <- 'subpop'
+
+subpop_vals <- lifebook_tbl[[subpop_var]] == TRUE
+subpop_tbl  <- lifebook_tbl %>% filter(subpop_vals)
+
+datatypes_tbl <- lifebook_tbl %>%
+    select(-one_of(c(subpop_var, drop_var))) %>%
+    summarise_each(funs(class)) %>%
+    gather('variable','datatype')
+
+var_types <- datatypes_tbl %>%
+    .[['datatype']] %>%
+    unique
+
+gen_list <- lapply(var_types
+                   ,function(x) datatypes_tbl %>% filter(datatype == x) %>% .[['variable']])
+
+names(gen_list) <- var_types
+
+type_list <- list(
+    categorical = c(gen_list$factor, gen_list$logical)
+   ,numeric     = c(gen_list$numeric, gen_list$integer)
+   ,datetime    = gen_list$Date
+)
+```
+
+
+# Initial Visualisations
+
+We first create some simple plots based on the indicator.
+
+```{r count_plot, echo=TRUE}
+ggplot(lifebook_tbl) +
+    geom_bar(aes(x = subpop)) +
+    scale_y_continuous(labels = comma) +
+    ylab("Count")
+```
+
+
+# Facet Plots
+
+```{r create_faceting_formula, echo=TRUE}
+facet_formula <- formula(paste0("~", subpop_var))
+```
+
+## Categorical Variables
+
+```{r create_categorical_facetplots, echo=TRUE}
+for(plot_var in type_list$categorical) {
+    cat(paste0("Plot Var: ", plot_var, "\n"))
+    
+    var_plot <- ggplot(lifebook_tbl) +
+        geom_bar(aes_string(x = plot_var)) +
+        facet_wrap(facet_formula, scales = 'free') +
+        scale_y_continuous(labels = comma) +
+        xlab(plot_var) +
+        ylab("Count") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+    print(var_plot)
+}
+```
+
+## Numeric Variables
+
+```{r create_numerical_facetplots, echo=TRUE}
+for(plot_var in type_list$numeric) {
+    cat(paste0("Plot Var: ", plot_var, "\n"))
+    
+    var_plot <- ggplot(lifebook_tbl) +
+        geom_histogram(aes_string(x = plot_var), bins = 50) +
+        facet_wrap(facet_formula, scales = 'free') +
+        scale_x_continuous(labels = comma) +
+        scale_y_continuous(labels = comma) +
+        xlab(plot_var) +
+        ylab("Count")
+
+    print(var_plot)
+}
+```
+
+## Date/Time Variables
+
+```{r create_datetime_facetplots, echo=TRUE}
+for(plot_var in type_list$datetime) {
+    cat(paste0("Plot Var: ", plot_var, "\n"))
+    
+    var_plot <- ggplot(lifebook_tbl) +
+        geom_histogram(aes_string(x = plot_var), bins = 50) +
+        facet_wrap(facet_formula, scales = 'free') +
+        scale_x_date(date_labels = '%Y-%m-%d') +
+        scale_y_continuous(labels = comma) +
+        xlab(plot_var) +
+        ylab("Count") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+        
+
+    print(var_plot)
+}
+```
+
+
+# Bootstrap Checks
+
+This approach compares the data in the subpopulation against a number of bootstrap samples from the full dataset, and then plots the two against each other.
+
+```{r setup_bootstrap, echo=TRUE}
+bootstrap_count <- 250
+
+calc_bootstrap_stats <- function(x, b) {
+    if(missing(b)) b <- seq_along(x)
+    
+    use_x     <- x[b]
+    samp_mean <- mean(use_x)
+    samp_perc <- quantile(use_x
+                         ,type = 1
+                         ,probs = c(0.50, 0.01, 0.10, 0.25, 0.75, 0.90, 0.99))
+
+    return(c(mean = samp_mean, samp_perc))    
+}
+
+generate_bootstrap_props <- function(data_tbl, cat_varname, count) {
+    bs_tbl <- data_tbl %>%
+        sample_n(count) %>%
+        group_by_(cat_varname) %>%
+        summarise(count = n()) %>%
+        mutate(prop = count / sum(count))
+    
+    return(bs_tbl)
+}
+```
+
+
+## Categorical Variables
+
+Dealing with the bootstrap for categorical variables is not obvious to me.
+
+```{r calculate_categorical_bootstrap, echo=TRUE}
+for(plot_var in type_list$categorical) {
+    subpop_prop_tbl <- subpop_tbl %>%
+        group_by_(plot_var) %>%
+        summarise(count = n()) %>%
+        mutate(prop = count / sum(count)
+              ,idx  = 1) %>%
+        arrange_(plot_var)
+
+    catprop_lst <- list()
+    
+    for(i in 1:bootstrap_count) {
+        catprop_lst[[i]] <- lifebook_tbl %>%
+            generate_bootstrap_props(plot_var, subpop_tbl %>% nrow) %>%
+            mutate(idx = i)
+    }
+    
+    bootprops_tbl <- catprop_lst %>% bind_rows()
+    rm(catprop_lst)
+    
+    cat_plot <- ggplot(bootprops_tbl) +
+        geom_line(aes_string(x = plot_var, y = 'prop', group = 'idx')
+                 ,alpha = 0.1) +
+        geom_line(aes_string(x = plot_var, y = 'prop', group = 1)
+                 ,data = subpop_prop_tbl
+                 ,colour = 'red') +
+        expand_limits(y = 0) +
+        xlab(plot_var) +
+        ylab("Proportion") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+    
+    print(cat_plot)
+}
+```
+
+## Numeric Variables
+
+We take bootstrap samples of the full dataset, calculate the statistics and compare them to the corresponding statistic in the subpopulation.
+
+```{r calculate_numerical_bootstrap, echo=TRUE}
+for(plot_var in type_list$numeric) {
+    cat(paste0("Plot Var: ", plot_var, "\n"))
+
+    var_vals <- lifebook_tbl %>% .[[plot_var]]
+    var_vals <- var_vals[!is.na(var_vals)]
+
+    subpop_stats_tbl <- var_vals %>%
+        calc_bootstrap_stats %>%
+        t %>%
+        as_data_frame %>%
+        gather('variable','value')
+
+    data_boot <- boot(var_vals, calc_bootstrap_stats, R = bootstrap_count)    
+    
+    boot_tbl        <- data_boot$t %>% as_data_frame
+    names(boot_tbl) <- subpop_stats_tbl$variable
+    
+    bootplot_tbl <- boot_tbl %>%
+        mutate(iter = 1:n()) %>%
+        gather('variable','value',-iter)
+
+    var_plot <- ggplot(bootplot_tbl) +
+        geom_density(aes(x = value)) +
+        geom_vline(aes(xintercept = value), data = subpop_stats_tbl, colour = 'red') +
+        facet_wrap(~variable, scales = 'free') +
+        scale_x_continuous(labels = comma) +
+        xlab(plot_var)
+        
+    print(var_plot)
+}
+```
+
+## Date/Time Variables
+
+```{r calculate_datetime_bootstrap, echo=TRUE}
+for(plot_var in type_list$datetime) {
+    cat(paste0("Plot Var: ", plot_var, "\n"))
+
+    var_vals <- lifebook_tbl %>% .[[plot_var]]
+    var_vals <- var_vals[!is.na(var_vals)]
+
+    stat_vals <- var_vals %>% calc_bootstrap_stats
+
+    subpop_stats_tbl <- data_frame(variable = names(stat_vals)
+                                  ,value    = stat_vals)
+    
+    data_boot <- boot(var_vals, calc_bootstrap_stats, R = bootstrap_count)    
+    
+    boot_tbl        <- data_boot$t %>% as_data_frame
+    names(boot_tbl) <- subpop_stats_tbl$variable
+    
+    bootplot_tbl <- boot_tbl %>%
+        mutate(iter = 1:n()) %>%
+        gather('variable','value',-iter) %>%
+        mutate(value = as.Date(value, origin = '1970-01-01'))
+
+    var_plot <- ggplot(bootplot_tbl) +
+        geom_histogram(aes(x = value), bins = 50) +
+        geom_vline(aes(xintercept = as.numeric(value)), data = subpop_stats_tbl, colour = 'red') +
+        facet_wrap(~variable, scales = 'free') +
+        scale_x_date(date_labels = '%Y-%m-%d') +
+        xlab(plot_var) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+        
+        
+    print(var_plot)
+}
+```
+

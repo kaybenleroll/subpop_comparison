@@ -1,0 +1,68 @@
+---
+title: "01 - Create the Data Subpopulation"
+author: "Mick Cooney"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    fig_caption: yes
+    theme: cerulean
+  pdf_document: default
+---
+
+<!--
+(Title: 01 - Create the Data Subpopulation
+Author: Mick Cooney
+Date: `r Sys.Date()`
+Abstract: The abstract for this article goes here
+Keywords:
+-->
+
+
+```{r knit_opts, include=FALSE}
+rm(list = ls())
+
+knitr::opts_chunk$set(tidy       = FALSE
+                     ,cache      = FALSE
+                     ,fig.height =     8
+                     ,fig.width  =    11
+                     )
+
+library(tidyverse)
+
+options(width = 90L)
+
+set.seed(42)
+```
+
+
+# Introduction
+
+This workbook loads the lifebook data and creates a sample subpopulation of the data to be analysed in the rest of the project.
+
+```{r load_data, echo=TRUE}
+original_tbl <- read_csv("data/lifebook_data.csv")
+
+glimpse(original_tbl)
+```
+
+# Create Subpopulation
+
+We now randomly label a subset of the data as our subpopulation.
+
+To start with, we sample 1% of the data completely at random.
+
+```{r sample_data, echo=TRUE}
+sample_prop <- 0.01
+
+lifebook_tbl <- original_tbl %>%
+    mutate(subpop = rbinom(n(), 1, sample_prop) == 1)
+```
+
+
+# Write to Disk
+
+```{r write_disk, echo=TRUE}
+write_csv(lifebook_tbl, path = 'data/dataset.csv')
+```
